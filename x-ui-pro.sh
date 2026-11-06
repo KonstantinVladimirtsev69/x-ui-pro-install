@@ -72,6 +72,34 @@ AUTODOMAIN="n"
 #    fi
 #done
 
+resolve_client_name() {
+    local input="$1"
+    local ip="$2"
+    local host="$3"
+
+    local ip_last="${ip##*.}"
+    [[ -z "$ip_last" || "$ip_last" == "$ip" ]] && ip_last="vpn"
+
+    local base_name=""
+    if [[ -n "$input" ]]; then
+        base_name=$(echo "$input" | tr -dc 'a-zA-Z0-9_-' | tr '[:upper:]' '[:lower:]')
+    fi
+
+    if [[ -z "$base_name" ]]; then
+        local raw_host="${host:-$(hostname -s 2>/dev/null || echo 'srv')}"
+        base_name=$(echo "$raw_host" | cut -d. -f1 | tr -dc 'a-zA-Z0-9_-' | tr '[:upper:]' '[:lower:]')
+        [[ -z "$base_name" ]] && base_name="srv"
+    fi
+
+    if [[ "$base_name" =~ -${ip_last}$ ]]; then
+        echo "$base_name"
+    else
+        echo "${base_name}-${ip_last}"
+    fi
+}
+
+client_name=""
+
 ################################Get arguments###########################################################
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -80,6 +108,7 @@ while [ "$#" -gt 0 ]; do
     -panel) PNLNUM="$2"; shift 2;;
     -subdomain) domain="$2"; shift 2;;
     -reality_domain) reality_domain="$2"; shift 2;;
+    -client_name) client_name="$2"; shift 2;;
     -ONLY_CF_IP_ALLOW) CFALLOW="$2"; shift 2;;
     -websub) CUSTOMWEBSUB="$2"; shift 2;;
     -clash) CLASH="$2"; shift 2;;
@@ -177,6 +206,8 @@ IP4=$(ip route get 8.8.8.8 2>&1 | grep -Po -- 'src \K\S*')
 IP6=$(ip route get 2620:fe::fe 2>&1 | grep -Po -- 'src \K\S*')
 [[ $IP4 =~ $IP4_REGEX ]] || IP4=$(curl -s ipv4.icanhazip.com);
 [[ $IP6 =~ $IP6_REGEX ]] || IP6=$(curl -s ipv6.icanhazip.com);
+client_name=$(resolve_client_name "$client_name" "$IP4")
+msg_inf "Client name: ${client_name}"
 ##############################Install SSL###############################################################
 
 resolve_to_ip () {
@@ -581,10 +612,10 @@ if [[ -f $XUIDB ]]; then
 	     INSERT INTO "settings" ("key", "value") VALUES ("subJsonMux",  '');
              INSERT INTO "settings" ("key", "value") VALUES ("subJsonRules",  '');
 	     INSERT INTO "settings" ("key", "value") VALUES ("datepicker",  'gregorian');
-             INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('1','1','first','0','0','0','0','0');
-	     INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('2','1','first_1','0','0','0','0','0');
-		   INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('3','1','firstX','0','0','0','0','0');
-	     INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('4','1','firstT','0','0','0','0','0');
+             INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('1','1','${client_name}','0','0','0','0','0');
+	     INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('2','1','${client_name}_ws','0','0','0','0','0');
+		   INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('3','1','${client_name}_xhttp','0','0','0','0','0');
+	     INSERT INTO "client_traffics" ("inbound_id","enable","email","up","down","expiry_time","total","reset") VALUES ('4','1','${client_name}_trojan','0','0','0','0','0');
              INSERT INTO "inbounds" ("user_id","up","down","total","remark","enable","expiry_time","listen","port","protocol","settings","stream_settings","tag","sniffing") VALUES ( 
              '1',
 	     '0',
@@ -601,13 +632,13 @@ if [[ -f $XUIDB ]]; then
     {
       "id": "${client_id}",
       "flow": "xtls-rprx-vision",
-      "email": "first",
+      "email": "${client_name}",
       "limitIp": 0,
       "totalGB": 0,
       "expiryTime": 0,
       "enable": true,
       "tgId": "",
-      "subId": "first",
+      "subId": "${client_name}",
       "reset": 0,
       "created_at": 1756726925000,
       "updated_at": 1756726925000
@@ -692,13 +723,13 @@ if [[ -f $XUIDB ]]; then
     {
       "id": "${client_id2}",
       "flow": "",
-      "email": "first_1",
+      "email": "${client_name}_ws",
       "limitIp": 0,
       "totalGB": 0,
       "expiryTime": 0,
       "enable": true,
       "tgId": "",
-      "subId": "first",
+      "subId": "${client_name}",
       "reset": 0,
       "created_at": 1756726925000,
       "updated_at": 1756726925000
@@ -754,13 +785,13 @@ if [[ -f $XUIDB ]]; then
     {
       "id": "${client_id3}",
       "flow": "",
-      "email": "firstX",
+      "email": "${client_name}_xhttp",
       "limitIp": 0,
       "totalGB": 0,
       "expiryTime": 0,
       "enable": true,
       "tgId": "",
-      "subId": "first",
+      "subId": "${client_name}",
       "reset": 0,
 	  "created_at": 1756726925000,
       "updated_at": 1756726925000
@@ -837,13 +868,13 @@ if [[ -f $XUIDB ]]; then
     {
       "comment": "",
       "created_at": 1756726925000,
-      "email": "firstT",
+      "email": "${client_name}_trojan",
       "enable": true,
       "expiryTime": 0,
       "limitIp": 0,
       "password": "${trojan_pass}",
       "reset": 0,
-      "subId": "first",
+      "subId": "${client_name}",
       "tgId": 0,
       "totalGB": 0,
       "updated_at": 1756726925000
@@ -1150,7 +1181,8 @@ if systemctl is-active --quiet x-ui; then clear
  	echo -e "Username:  ${config_username} \n" 
 	echo -e "Password:  ${config_password} \n" 
 	msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-    msg_inf "Web Sub Page your first client: https://${domain}/${web_path}?name=first\n"
+    msg_inf "Web Sub Page for client ${client_name}: https://${domain}/${web_path}?name=${client_name}\n"
+    msg_inf "Direct Subscription link: https://${domain}/${sub_path}/${client_name}\n"
     msg_inf "Your local sub2sing-box instance: https://${domain}/$sub2singbox_path/\n"
   msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 	msg_inf "Please Save this Screen!!"	

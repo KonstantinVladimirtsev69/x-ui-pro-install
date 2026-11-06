@@ -37,13 +37,40 @@ while true; do
     echo -e "${RED}Домен не может быть пустым!${NC}"
 done
 
+IP4=$(ip route get 8.8.8.8 2>&1 | grep -Po -- 'src \K\S*' || true)
+if [[ -z "$IP4" ]]; then
+    IP4=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || curl -s --max-time 3 https://ifconfig.me 2>/dev/null || echo "127.0.0.1")
+fi
+IP_LAST="${IP4##*.}"
+[[ -z "$IP_LAST" || "$IP_LAST" == "$IP4" ]] && IP_LAST="vpn"
+
+HOST_SHORT=$(hostname -s 2>/dev/null | cut -d. -f1 | tr -dc 'a-zA-Z0-9_-' | tr '[:upper:]' '[:lower:]' || echo "srv")
+[[ -z "$HOST_SHORT" ]] && HOST_SHORT="srv"
+DEFAULT_CLIENT="${HOST_SHORT}-${IP_LAST}"
+
+echo ""
+read -rp "Введите имя первого клиента [по умолчанию: ${DEFAULT_CLIENT}]: " INPUT_CLIENT
+INPUT_CLIENT=$(echo "$INPUT_CLIENT" | tr -dc 'a-zA-Z0-9_-' | tr '[:upper:]' '[:lower:]')
+
+if [[ -z "$INPUT_CLIENT" ]]; then
+    CLIENT_NAME="$DEFAULT_CLIENT"
+else
+    if [[ "$INPUT_CLIENT" =~ -${IP_LAST}$ ]]; then
+        CLIENT_NAME="$INPUT_CLIENT"
+    else
+        CLIENT_NAME="${INPUT_CLIENT}-${IP_LAST}"
+    fi
+fi
+echo -e "Имя первого клиента: ${BLUE}${CLIENT_NAME}${NC}"
+
 echo -e "\n${GREEN}[3/3] Запуск установки X-UI PRO...${NC}"
 bash <(curl -sSL https://raw.githubusercontent.com/KonstantinVladimirtsev69/x-ui-pro-install/main/x-ui-pro.sh) \
     -install yes \
     -panel 1 \
     -ONLY_CF_IP_ALLOW no \
     -subdomain "$DOMAIN_PANEL" \
-    -reality_domain "$DOMAIN_REALITY"
+    -reality_domain "$DOMAIN_REALITY" \
+    -client_name "$CLIENT_NAME"
 
 echo -e "\n${GREEN}======================================================${NC}"
 echo -e "${GREEN}      Установка успешно завершена! Сохраните данные выше.   ${NC}"
