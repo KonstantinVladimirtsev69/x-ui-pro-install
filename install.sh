@@ -19,7 +19,8 @@ echo -e "\n${GREEN}[1/3] Обновление системы и установк
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
-apt-get install -y curl wget jq sudo bash psmisc sqlite3 ufw
+apt-get install -y curl wget jq sudo bash psmisc sqlite3 ufw cron
+systemctl enable --now cron 2>/dev/null || true
 
 echo -e "\n${GREEN}[2/3] Ввод доменов${NC}"
 while true; do
