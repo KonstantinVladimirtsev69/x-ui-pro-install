@@ -62,6 +62,16 @@ config_username=$(gen_random_string 10)
 config_password=$(gen_random_string 10)
 AUTODOMAIN="n"
 
+##################################Random Port and Path #################################################
+#RNDSTR=$(tr -dc A-Za-z0-9 </dev/urandom | head -c "$(shuf -i 6-12 -n 1)")
+#while true; do 
+#    PORT=$(( ((RANDOM<<15)|RANDOM) % 49152 + 10000 ))
+#    status="$(nc -z 127.0.0.1 $PORT < /dev/null &>/dev/null; echo $?)"
+#    if [ "${status}" != "0" ]; then
+#        break
+#    fi
+#done
+
 ################################Get arguments###########################################################
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -102,7 +112,10 @@ IP4=$(ip route get 8.8.8.8 2>&1 | grep -Po -- 'src \K\S*')
 
 
 if [[ ${AUTODOMAIN} == *"y"* ]]; then
+    # panel domain: x.x.x.x.cdn-one.org
     domain="${IP4}.cdn-one.org"
+
+    # reality domain: x-x-x-x.cdn-one.org
     reality_domain="${IP4//./-}.cdn-one.org"
 fi
 
@@ -144,13 +157,14 @@ if [[ ${INSTALL} == *"y"* ]]; then
 
          version=$(grep -oP '(?<=VERSION_ID=")[0-9]+' /etc/os-release)
 
+         # Проверяем, является ли версия 20 или 22
         if [[ "$version" == "20" || "$version" == "22" || "$version" == "24" ]]; then
               echo "Версия системы: Ubuntu $version"
         fi
 
 	$Pak -y update
 
-	$Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw psmisc
+	$Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw
 
 	systemctl daemon-reload && systemctl enable --now nginx
 fi
@@ -167,6 +181,7 @@ IP6=$(ip route get 2620:fe::fe 2>&1 | grep -Po -- 'src \K\S*')
 
 resolve_to_ip () {
     local host="$1"
+    # get first A-record
     local a
     a=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}')
     [[ -n "$a" ]] && [[ "$a" == "$IP4" ]]
@@ -195,9 +210,7 @@ if [[ ! -d "/etc/letsencrypt/live/${reality_domain}/" ]]; then
  	systemctl start nginx >/dev/null 2>&1
 	msg_err "$reality_domain SSL could not be generated! Check Domain/IP Or Enter new domain!" && exit 1
 fi
-
-chmod 755 /etc/letsencrypt /etc/letsencrypt/live /etc/letsencrypt/archive /etc/letsencrypt/live/* /etc/letsencrypt/archive/* 2>/dev/null || true
-chmod 755 /root 2>/dev/null || true
+################################# Access to configs only with cloudflare#################################
 
 ###################################Get Installed XUI Port/Path##########################################
 if [[ -f $XUIDB ]]; then
@@ -215,13 +228,14 @@ fi
 fi
 #################################Nginx Config###########################################################
 mkdir -p /root/cert/${domain}
-chmod 755 /root/cert 2>/dev/null || true
+chmod 755 /root/cert/*
 
 ln -sf /etc/letsencrypt/live/${domain}/fullchain.pem /root/cert/${domain}/fullchain.pem
 ln -sf /etc/letsencrypt/live/${domain}/privkey.pem /root/cert/${domain}/privkey.pem
 
 mkdir -p /etc/nginx/stream-enabled
 cat > "/etc/nginx/stream-enabled/stream.conf" << EOF
+map_hash_bucket_size 128;
 map \$ssl_preread_server_name \$sni_name {
     hostnames;
     ${reality_domain}      xray;
@@ -247,14 +261,10 @@ server {
 
 EOF
 
-grep -xqFR "stream { include /etc/nginx/stream-enabled/*.conf; }" /etc/nginx/* || echo "stream { include /etc/nginx/stream-enabled/*.conf; }" >> /etc/nginx/nginx.conf
-if ! ls /etc/nginx/modules-enabled/*stream* &>/dev/null && ! grep -qF "ngx_stream_module" /etc/nginx/nginx.conf; then
-    [[ -f /usr/lib/nginx/modules/ngx_stream_module.so ]] && sed -i '1s|^|load_module /usr/lib/nginx/modules/ngx_stream_module.so;\n|' /etc/nginx/nginx.conf
-fi
-if ! ls /etc/nginx/modules-enabled/*geoip2* &>/dev/null && ! grep -qF "ngx_stream_geoip2_module" /etc/nginx/nginx.conf; then
-    [[ -f /usr/lib/nginx/modules/ngx_stream_geoip2_module.so ]] && sed -i '2s|^|load_module /usr/lib/nginx/modules/ngx_stream_geoip2_module.so;\n|' /etc/nginx/nginx.conf
-fi
-grep -xqFR "worker_rlimit_nofile 16384;" /etc/nginx/* || echo "worker_rlimit_nofile 16384;" >> /etc/nginx/nginx.conf
+grep -xqFR "stream { include /etc/nginx/stream-enabled/*.conf; }" /etc/nginx/* ||echo "stream { include /etc/nginx/stream-enabled/*.conf; }" >> /etc/nginx/nginx.conf
+grep -xqFR "load_module modules/ngx_stream_module.so;" /etc/nginx/* || sed -i '1s/^/load_module \/usr\/lib\/nginx\/modules\/ngx_stream_module.so; /' /etc/nginx/nginx.conf
+grep -xqFR "load_module modules/ngx_stream_geoip2_module.so;" /etc/nginx* || sed -i '2s/^/load_module \/usr\/lib\/nginx\/modules\/ngx_stream_geoip2_module.so; /' /etc/nginx/nginx.conf
+grep -xqFR "worker_rlimit_nofile 16384;" /etc/nginx/* ||echo "worker_rlimit_nofile 16384;" >> /etc/nginx/nginx.conf
 sed -i "/worker_connections/c\worker_connections 4096;" /etc/nginx/nginx.conf
 cat > "/etc/nginx/sites-available/80.conf" << EOF
 server {
@@ -277,9 +287,9 @@ server {
 	ssl_ciphers HIGH:!aNULL:!eNULL:!MD5:!DES:!RC4:!ADH:!SSLv3:!EXP:!PSK:!DSS;
 	ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
 	ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
-	if (\$host !~* ^(.+\.)?${domain}\$ ){return 444;}
+	if (\$host !~* ^(.+\.)?$domain\$ ){return 444;}
 	if (\$scheme ~* https) {set \$safe 1;}
-	if (\$ssl_server_name !~* ^(.+\.)?${domain}\$ ) {set \$safe "\${safe}0"; }
+	if (\$ssl_server_name !~* ^(.+\.)?$domain\$ ) {set \$safe "\${safe}0"; }
 	if (\$safe = 10){return 444;}
 	if (\$request_uri ~ "(\"|'|\`|~|,|:|;|%|\\$|&&|\?\?|0x00|0X00|\||\\|\{|\}|\[|\]|<|>|\.\.\.|\.\.\/|\/\/\/)"){set \$hack 1;}
 	error_page 400 401 402 403 500 501 502 503 504 =404 /404;
@@ -289,6 +299,8 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Upgrade websocket;
+        proxy_set_header Connection Upgrade;		
         proxy_set_header Host \$host;
 		proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -304,6 +316,8 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Upgrade websocket;
+        proxy_set_header Connection Upgrade;		
         proxy_set_header Host \$host;
 		proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -431,6 +445,8 @@ cat > "/etc/nginx/snippets/includes.conf" << EOF
 		proxy_set_header Host \$host;
 		proxy_set_header X-Real-IP \$remote_addr;
 		proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+		#proxy_set_header CF-IPCountry \$http_cf_ipcountry;
+		#proxy_set_header CF-IP \$realip_remote_addr;
 		if (\$content_type ~* "GRPC") {
 			grpc_pass grpc://127.0.0.1:\$fwdport\$is_args\$args;
 			break;
@@ -491,7 +507,7 @@ if [[ -f "/etc/nginx/sites-available/${domain}" ]]; then
 	unlink "/etc/nginx/sites-enabled/default" >/dev/null 2>&1
 	rm -f "/etc/nginx/sites-enabled/default" "/etc/nginx/sites-available/default"
 	ln -sf "/etc/nginx/sites-available/${domain}" "/etc/nginx/sites-enabled/" 2>/dev/null
-    ln -sf "/etc/nginx/sites-available/${reality_domain}" "/etc/nginx/sites-enabled/" 2>/dev/null
+        ln -sf "/etc/nginx/sites-available/${reality_domain}" "/etc/nginx/sites-enabled/" 2>/dev/null
 	ln -sf "/etc/nginx/sites-available/80.conf" "/etc/nginx/sites-enabled/" 2>/dev/null
 else
 	msg_err "${domain} nginx config not exist!" && exit 1
@@ -580,8 +596,566 @@ if [[ -f $XUIDB ]]; then
 	     '',
              '8443',
 	     'vless',
-             '{\n\t     \"clients\": [\n    {\n      \"id\": \"${client_id}\",\n      \"flow\": \"xtls-rprx-vision\",\n      \"email\": \"first\",\n      \"limitIp\": 0,\n      \"totalGB\": 0,\n      \"expiryTime\": 0,\n      \"enable\": true,\n      \"tgId\": \"\",\n      \"subId\": \"first\",\n      \"reset\": 0,\n      \"created_at\": 1756726925000,\n      \"updated_at\": 1756726925000\n\n    }\n  ],\n  \"decryption\": \"none\",\n  \"fallbacks\": []\n}',
-	     '{\n  \"network\": \"tcp\",\n  \"security\": \"reality\",\n  \"externalProxy\": [\n    {\n      \"forceTls\": \"same\",\n      \"dest\": \"${domain}\",\n      \"port\": 443,\n      \"remark\": \"\"\n    }\n  ],\n  \"realitySettings\": {\n    \"show\": false,\n    \"xver\": 0,\n    \"target\": \"127.0.0.1:9443\",\n    \"serverNames\": [\n      \"$reality_domain\"\n    ],\n    \"privateKey\": \"${private_key}\",\n    \"minClient\": \"\",\n    \"maxClient\": \"\",\n    \"maxTimediff\": 0,\n    \"shortIds\": [\n      \"${shor[0]}\",\n      \"${shor[1]}\",\n      \"${shor[2]}\",\n      \"${shor[3]}\",\n      \"${shor[4]}\",\n      \"${shor[5]}\",\n      \"${shor[6]}\",\n      \"${shor[7]}\"\n    ],\n    \"settings\": {\n      \"publicKey\": \"${public_key}\",\n      \"fingerprint\": \"chrome\",\n      \"serverName\": \"\",\n      \"spiderX\": \"/\"\n    }\n  },\n  \"tcpSettings\": {\n    \"acceptProxyProtocol\": true,\n    \"header\": {\n      \"type\": \"none\"\n    }\n  }\n}',
+             '{
+	     "clients": [
+    {
+      "id": "${client_id}",
+      "flow": "xtls-rprx-vision",
+      "email": "first",
+      "limitIp": 0,
+      "totalGB": 0,
+      "expiryTime": 0,
+      "enable": true,
+      "tgId": "",
+      "subId": "first",
+      "reset": 0,
+      "created_at": 1756726925000,
+      "updated_at": 1756726925000
+
+    }
+  ],
+  "decryption": "none",
+  "fallbacks": []
+}',
+	     '{
+  "network": "tcp",
+  "security": "reality",
+  "externalProxy": [
+    {
+      "forceTls": "same",
+      "dest": "${domain}",
+      "port": 443,
+      "remark": ""
+    }
+  ],
+  "realitySettings": {
+    "show": false,
+    "xver": 0,
+    "target": "127.0.0.1:9443",
+    "serverNames": [
+      "$reality_domain"
+    ],
+    "privateKey": "${private_key}",
+    "minClient": "",
+    "maxClient": "",
+    "maxTimediff": 0,
+    "shortIds": [
+      "${shor[0]}",
+      "${shor[1]}",
+      "${shor[2]}",
+      "${shor[3]}",
+      "${shor[4]}",
+      "${shor[5]}",
+      "${shor[6]}",
+      "${shor[7]}"
+    ],
+    "settings": {
+      "publicKey": "${public_key}",
+      "fingerprint": "chrome",
+      "serverName": "",
+      "spiderX": "/"
+    }
+  },
+  "tcpSettings": {
+    "acceptProxyProtocol": true,
+    "header": {
+      "type": "none"
+    }
+  }
+}',
              'inbound-8443',
-	     '{\n  \"enabled\": false,\n  \"destOverride\": [\n    \"http\",\n    \"tls\",\n    \"quic\",\n    \"fakedns\"\n  ],\n  \"metadataOnly\": false,\n  \"routeOnly\": false\n}'
-	     );\n      INSERT INTO \"inbounds\" (\"user_id\",\"up\",\"down\",\"total\",\"remark\",\"enable\",\"expiry_time\",\"listen\",\"port\",\"protocol\",\"settings\",\"stream_settings\",\"tag\",\"sniffing\") VALUES ( \n             '1',\n	     '0',\n             '0',\n	     '0',\n             '${emoji_flag} ws',\n	     '1',\n             '0',\n	     '',\n             '${ws_port}',\n	     'vless',\n             '{\n  \"clients\": [\n    {\n      \"id\": \"${client_id2}\",\n      \"flow\": \"\",\n      \"email\": \"first_1\",\n      \"limitIp\": 0,\n      \"totalGB\": 0,\n      \"expiryTime\": 0,\n      \"enable\": true,\n      \"tgId\": \"\",\n      \"subId\": \"first\",\n      \"reset\": 0,\n      \"created_at\": 1756726925000,\n      \"updated_at\": 1756726925000\n\n    }\n  ],\n  \"decryption\": \"none\",\n  \"fallbacks\": []\n}','{\n  \"network\": \"ws\",\n  \"security\": \"none\",\n  \"externalProxy\": [\n    {\n      \"forceTls\": \"tls\",\n      \"dest\": \"${domain}\",\n      \"port\": 443,\n      \"remark\": \"\"\n    }\n  ],\n  \"wsSettings\": {\n    \"acceptProxyProtocol\": false,\n    \"path\": \"/${ws_port}/${ws_path}\",\n    \"host\": \"${domain}\",\n    \"headers\": {}\n  }\n}',\n             'inbound-${ws_port}',\n\t     '{\n  \"enabled\": false,\n  \"destOverride\": [\n    \"http\",\n    \"tls\",\n    \"quic\",\n    \"fakedns\"\n  ],\n  \"metadataOnly\": false,\n  \"routeOnly\": false\n}'\n\t     );\n      INSERT INTO \"inbounds\" (\"user_id\",\"up\",\"down\",\"total\",\"remark\",\"enable\",\"expiry_time\",\"listen\",\"port\",\"protocol\",\"settings\",\"stream_settings\",\"tag\",\"sniffing\") VALUES ( \n             '1',\n	     '0',\n             '0',\n	     '0',\n             '${emoji_flag} xhttp',\n	     '0',\n             '0',\n	     '/dev/shm/uds2023.sock,0666',\n             '0',\n	     'vless',\n             '{\n  \"clients\": [\n    {\n      \"id\": \"${client_id3}\",\n      \"flow\": \"\",\n      \"email\": \"firstX\",\n      \"limitIp\": 0,\n      \"totalGB\": 0,\n      \"expiryTime\": 0,\n      \"enable\": true,\n      \"tgId\": \"\",\n      \"subId\": \"first\",\n      \"reset\": 0,\n	  \"created_at\": 1756726925000,\n      \"updated_at\": 1756726925000\n    }\n  ],\n  \"decryption\": \"none\",\n  \"fallbacks\": []\n}','{\n  \"network\": \"xhttp\",\n  \"security\": \"none\",\n  \"externalProxy\": [\n    {\n      \"forceTls\": \"tls\",\n      \"dest\": \"${domain}\",\n      \"port\": 443,\n      \"remark\": \"\"\n    }\n  ],\n  \"xhttpSettings\": {\n    \"path\": \"/${xhttp_path}\",\n    \"host\": \"${domain}\",\n    \"headers\": {},\n    \"scMaxBufferedPosts\": 30,\n    \"scMaxEachPostBytes\": \"1000000\",\n    \"noSSEHeader\": false,\n    \"xPaddingBytes\": \"100-1000\",\n    \"mode\": \"packet-up\"\n  },\n  \"sockopt\": {\n    \"acceptProxyProtocol\": false,\n    \"tcpFastOpen\": true,\n    \"mark\": 0,\n    \"tproxy\": \"off\",\n    \"tcpMptcp\": true,\n    \"tcpNoDelay\": true,\n    \"domainStrategy\": \"UseIP\",\n    \"tcpMaxSeg\": 1440,\n    \"dialerProxy\": \"\",\n    \"tcpKeepAliveInterval\": 0,\n    \"tcpKeepAliveIdle\": 300,\n    \"tcpUserTimeout\": 10000,\n    \"tcpcongestion\": \"bbr\",\n    \"V6Only\": false,\n    \"tcpWindowClamp\": 600,\n    \"interface\": \"\"\n  }\n}',\n             'inbound-/dev/shm/uds2023.sock,0666:0|',\n\t     '{\n  \"enabled\": true,\n  \"destOverride\": [\n    \"http\",\n    \"tls\",\n    \"quic\",\n    \"fakedns\"\n  ],\n  \"metadataOnly\": false,\n  \"routeOnly\": false\n}'\n\t     );\n	INSERT INTO \"inbounds\" (\"user_id\",\"up\",\"down\",\"total\",\"remark\",\"enable\",\"expiry_time\",\"listen\",\"port\",\"protocol\",\"settings\",\"stream_settings\",\"tag\",\"sniffing\") VALUES ( \n\t     '1',\n\t     '0',\n         '0',\n\t     '0',\n         '${emoji_flag} trojan-grpc',\n\t     '1',\n         '0',\n\t\t '',\n\t\t '${trojan_port}',\n\t\t 'trojan',\n\t\t '{\n  \"clients\": [\n    {\n      \"comment\": \"\",\n      \"created_at\": 1756726925000,\n      \"email\": \"firstT\",\n      \"enable\": true,\n      \"expiryTime\": 0,\n      \"limitIp\": 0,\n      \"password\": \"${trojan_pass}\",\n      \"reset\": 0,\n      \"subId\": \"first\",\n      \"tgId\": 0,\n      \"totalGB\": 0,\n      \"updated_at\": 1756726925000\n    }\n  ],\n  \"fallbacks\": []\n}',\n'{\n  \"network\": \"grpc\",\n  \"security\": \"none\",\n  \"externalProxy\": [\n    {\n      \"forceTls\": \"tls\",\n      \"dest\": \"${domain}\",\n      \"port\": 443,\n      \"remark\": \"\"\n    }\n  ],\n  \"grpcSettings\": {\n    \"serviceName\": \"/${trojan_port}/${trojan_path}\",\n    \"authority\": \"${domain}\",\n    \"multiMode\": false\n  }\n}',\n'inbound-${trojan_port}',\n'{\n  \"enabled\": false,\n  \"destOverride\": [\n    \"http\",\n    \"tls\",\n    \"quic\",\n    \"fakedns\"\n  ],\n  \"metadataOnly\": false,\n  \"routeOnly\": false\n}'\n\t);\nEOF\n/usr/local/x-ui/x-ui setting -username \"${config_username}\" -password \"${config_password}\" -port \"${panel_port}\" -webBasePath \"${panel_path}\"\n/usr/local/x-ui/x-ui cert -webCert \"/root/cert/${domain}/fullchain.pem\" -webCertKey \"/root/cert/${domain}/privkey.pem\"\nx-ui start\nelse\n\tmsg_err \"x-ui.db file not exist! Maybe x-ui isn't installed.\" && exit 1;\nfi\n}\narch() {\n    case \"$(uname -m)\" in\n        x86_64 | x64 | amd64) echo 'amd64' ;;\n        i*86 | x86) echo '386' ;;\n        armv8* | armv8 | arm64 | aarch64) echo 'arm64' ;;\n        armv7* | armv7 | arm) echo 'armv7' ;;\n        armv6* | armv6) echo 'armv6' ;;\n        armv5* | armv5) echo 'armv5' ;;\n        s390x) echo 's390x' ;;\n        *) echo -e \"${green}Unsupported CPU architecture! ${plain}\" && rm -f install.sh && exit 1 ;;\n    esac\n}\n\nconfig_after_install() {\n            /usr/local/x-ui/x-ui setting -username \"asdfasdf\" -password \"asdfasdf\" -port \"2096\" -webBasePath \"asdfasdf\"    \n            /usr/local/x-ui/x-ui migrate\n}\n\ninstall_panel() {\napt-get update && apt-get install -y -q wget curl tar tzdata\n    cd /usr/local/\n    \n    # Download resources\n    if [ $# == 0 ]; then\n        tag_version=$(curl -Ls \"https://api.github.com/repos/MHSanaei/3x-ui/releases/latest\" | grep '\"tag_name\":' | sed -E 's/.*\"([^\"]+)\".*/\\1/')\n        if [[ ! -n \"$tag_version\" ]]; then\n            echo -e \"${yellow}Trying to fetch version with IPv4...${plain}\"\n            tag_version=$(curl -4 -Ls \"https://api.github.com/repos/MHSanaei/3x-ui/releases/latest\" | grep '\"tag_name\":' | sed -E 's/.*\"([^\"]+)\".*/\\1/')\n            if [[ ! -n \"$tag_version\" ]]; then\n                echo -e \"${red}Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later${plain}\"\n                exit 1\n            fi\n        fi\n        echo -e \"Got x-ui latest version: ${tag_version}, beginning the installation...\"\n        wget -N -O /usr/local/x-ui-linux-$(arch).tar.gz https://github.com/MHSanaei/3x-ui/releases/download/v2.9.4/x-ui-linux-$(arch).tar.gz\n        if [[ $? -ne 0 ]]; then\n            echo -e \"${red}Downloading x-ui failed, please be sure that your server can access GitHub ${plain}\"\n            exit 1\n        fi\n    else\n        tag_version=$1\n        tag_version_numeric=${tag_version#v}\n        min_version=\"2.3.5\"\n        \n        if [[ \"$(printf '%s\\n' \"$min_version\" \"$tag_version_numeric\" | sort -V | head -n1)\" != \"$min_version\" ]]; then\n            echo -e \"${red}Please use a newer version (at least v2.3.5). Exiting installation.${plain}\"\n            exit 1\n        fi\n        \n        url=\"https://github.com/MHSanaei/3x-ui/releases/download/v2.9.4/x-ui-linux-$(arch).tar.gz\"\n        echo -e \"Beginning to install x-ui $1\"\n        wget -N -O /usr/local/x-ui-linux-$(arch).tar.gz ${url}\n        if [[ $? -ne 0 ]]; then\n            echo -e \"${red}Download x-ui $1 failed, please check if the version exists ${plain}\"\n            exit 1\n        fi\n    fi\n    wget -O /usr/bin/x-ui-temp https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.sh\n    if [[ $? -ne 0 ]]; then\n        echo -e \"${red}Failed to download x-ui.sh${plain}\"\n        exit 1\n    fi\n    \n    # Stop x-ui service and remove old resources\n    if [[ -e /usr/local/x-ui/ ]]; then\n        if [[ $release == \"alpine\" ]]; then\n            rc-service x-ui stop\n        else\n            systemctl stop x-ui\n        fi\n        rm /usr/local/x-ui/ -rf\n    fi\n    \n    # Extract resources and set permissions\n    tar zxvf x-ui-linux-$(arch).tar.gz\n    rm x-ui-linux-$(arch).tar.gz -f\n    \n    cd x-ui\n    chmod +x x-ui\n    chmod +x x-ui.sh\n    \n    # Check the system's architecture and rename the file accordingly\n    if [[ $(arch) == \"armv5\" || $(arch) == \"armv6\" || $(arch) == \"armv7\" ]]; then\n        mv bin/xray-linux-$(arch) bin/xray-linux-arm\n        chmod +x bin/xray-linux-arm\n    fi\n    chmod +x x-ui bin/xray-linux-$(arch)\n    \n    # Update x-ui cli and se set permission\n    mv -f /usr/bin/x-ui-temp /usr/bin/x-ui\n    chmod +x /usr/bin/x-ui\n	config_after_install\n    \n    if [[ $release == \"alpine\" ]]; then\n        wget --inet4-only -O /etc/init.d/x-ui https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.rc\n        if [[ $? -ne 0 ]]; then\n            echo -e \"${red}Failed to download x-ui.rc${plain}\"\n            exit 1\n        fi\n        chmod +x /etc/init.d/x-ui\n        rc-update add x-ui\n        rc-service x-ui start\n    else\n        cp -f x-ui.service.debian /etc/systemd/system/x-ui.service\n        systemctl daemon-reload\n        systemctl enable x-ui\n        systemctl start x-ui\n    fi\n    \n    echo -e \"${green}x-ui ${tag_version}${plain} installation finished, it is running now...\"\n    echo -e \"\"\n}\n###################################Install X-UI#########################################################\nif systemctl is-active --quiet x-ui; then\n	x-ui restart\nelse\n    install_panel	\n	UPDATE_XUIDB\n	if ! systemctl is-enabled --quiet x-ui; then\n		systemctl daemon-reload && systemctl enable x-ui.service\n	fi\n	x-ui restart\nfi\n\n######################enable bbr and tune system########################################################\napt-get install -yqq --no-install-recommends ca-certificates\necho \"net.core.default_qdisc=fq\" | tee -a /etc/sysctl.conf\necho \"net.ipv4.tcp_congestion_control=bbr\" | tee -a /etc/sysctl.conf\necho \"fs.file-max=2097152\" | tee -a /etc/sysctl.conf\necho \"net.ipv4.tcp_timestamps = 1\" | tee -a /etc/sysctl.conf\necho \"net.ipv4.tcp_sack = 1\" | tee -a /etc/sysctl.conf\necho \"net.ipv4.tcp_window_scaling = 1\" | tee -a /etc/sysctl.conf\necho \"net.core.rmem_max = 16777216\" | tee -a /etc/sysctl.conf\necho \"net.core.wmem_max = 16777216\" | tee -a /etc/sysctl.conf\necho \"net.ipv4.tcp_rmem = 4096 87380 16777216\" | tee -a /etc/sysctl.conf\necho \"net.ipv4.tcp_wmem = 4096 65536 16777216\" | tee -a /etc/sysctl.conf\n\nsysctl -p\n\n\n######################install_sub2sing-box#################################################################\n\nif pgrep -x \"sub2sing-box\" > /dev/null; then\n    echo \"kill sub2sing-box...\"\n    pkill -x \"sub2sing-box\"\nfi\nif [ -f \"/usr/bin/sub2sing-box\" ]; then\n    echo \"delete sub2sing-box...\"\n    rm -f /usr/bin/sub2sing-box\nfi\nwget -P /root/ https://github.com/legiz-ru/sub2sing-box/releases/download/v0.0.9/sub2sing-box_0.0.9_linux_amd64.tar.gz\ntar -xvzf /root/sub2sing-box_0.0.9_linux_amd64.tar.gz -C /root/ --strip-components=1 sub2sing-box_0.0.9_linux_amd64/sub2sing-box\nmv /root/sub2sing-box /usr/bin/\nchmod +x /usr/bin/sub2sing-box\nrm /root/sub2sing-box_0.0.9_linux_amd64.tar.gz\nsu -c \"/usr/bin/sub2sing-box server --bind 127.0.0.1 --port 8080 >/dev/null 2>&1 &\"\n\n######################install_fake_site#################################################################\n\nFAKE_SITE_TMP=$(mktemp -d)\nif wget -qO \"$FAKE_SITE_TMP/repo.tar.gz\" \"https://github.com/mozaroc/3x-ui-pro/archive/refs/heads/main.tar.gz\" \\\n	&& tar -xzf \"$FAKE_SITE_TMP/repo.tar.gz\" -C \"$FAKE_SITE_TMP\" --strip-components=3 \"3x-ui-pro-main/assets/fake-sites\"; then\n	FAKE_SITES=(\"$FAKE_SITE_TMP\"/site-*/)\n	FAKE_SITE=\"${FAKE_SITES[$((RANDOM % ${#FAKE_SITES[@]}))]}\"\n	msg_inf \"Random fake site template: $(basename \"$FAKE_SITE\")\"\n	mkdir -p /var/www/html\n	rm -rf /var/www/html/*\n	cp -a \"$FAKE_SITE\". /var/www/html/\n	msg_ok \"Fake site installed successfully!\"\nelse\n	msg_err \"Failed to download fake site templates!\"\nfi\nrm -rf \"$FAKE_SITE_TMP\"\n\n######################install_web_sub_page##############################################################\n\nURL_SUB_PAGE=( \"https://github.com/legiz-ru/x-ui-pro/raw/master/sub-3x-ui.html\"\n		\"https://github.com/legiz-ru/x-ui-pro/raw/master/sub-3x-ui-classical.html\"\n	)\nURL_CLASH_SUB=( \"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash.yaml\"\n		\"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash_skrepysh.yaml\"\n		\"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash_fullproxy_without_ru.yaml\"\n  		\"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash_refilter_ech.yaml\"\n	)\nDEST_DIR_SUB_PAGE=\"/var/www/subpage\"\nDEST_FILE_SUB_PAGE=\"$DEST_DIR_SUB_PAGE/index.html\"\nDEST_FILE_CLASH_SUB=\"$DEST_DIR_SUB_PAGE/clash.yaml\"\n\nsudo mkdir -p \"$DEST_DIR_SUB_PAGE\"\n\nsudo curl -L \"${URL_CLASH_SUB[$CLASH]}\" -o \"$DEST_FILE_CLASH_SUB\"\nsudo curl -L \"${URL_SUB_PAGE[$CUSTOMWEBSUB]}\" -o \"$DEST_FILE_SUB_PAGE\"\n\nsed -i \"s/\\${DOMAIN}/$domain/g\" \"$DEST_FILE_SUB_PAGE\"\nsed -i \"s/\\${DOMAIN}/$domain/g\" \"$DEST_FILE_CLASH_SUB\"\nsed -i \"s#\\${SUB_JSON_PATH}#$json_path#g\" \"$DEST_FILE_SUB_PAGE\"\nsed -i \"s#\\${SUB_PATH}#$sub_path#g\" \"$DEST_FILE_SUB_PAGE\"\nsed -i \"s#\\${SUB_PATH}#$sub_path#g\" \"$DEST_FILE_CLASH_SUB\"\nsed -i \"s|sub.legiz.ru|$domain/$sub2singbox_path|g\" \"$DEST_FILE_SUB_PAGE\"\n\n######################cronjob for ssl/reload service/cloudflareips######################################\ncrontab -l | grep -v \"certbot\\|x-ui\\|cloudflareips\" | crontab -\n(crontab -l 2>/dev/null; echo '@reboot /usr/bin/sub2sing-box server --bind 127.0.0.1 --port 8080 > /dev/null 2>&1') | crontab -\n(crontab -l 2>/dev/null; echo '@daily x-ui restart > /dev/null 2>&1 && nginx -s reload;') | crontab -\n(crontab -l 2>/dev/null; echo '@monthly certbot renew --nginx --non-interactive --post-hook \"nginx -s reload\" > /dev/null 2>&1;') | crontab -\n##################################ufw###################################################################\nufw disable\nufw allow 22/tcp\nufw allow 80/tcp\nufw allow 443/tcp\nufw --force enable  \n##################################Show Details##########################################################\n\nif systemctl is-active --quiet x-ui; then clear\n\tprintf '0\\n' | x-ui | grep --color=never -i ':'\n\tmsg_inf \"- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\"\n\tnginx -T | grep -i 'ssl_certificate\\|ssl_certificate_key'\n\tmsg_inf \"- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\"\n\tcertbot certificates | grep -i 'Path:\\|Domains:\\|Expiry Date:'\n\n msg_inf \"- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\"\n\tmsg_inf \"X-UI Secure Panel: https://${domain}/${panel_path}/\\n\"\n \techo -e \"Username:  ${config_username} \\n\" \n\techo -e \"Password:  ${config_password} \\n\" \n\tmsg_inf \"- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\"\n    msg_inf \"Web Sub Page your first client: https://${domain}/${web_path}?name=first\\n\"\n    msg_inf \"Your local sub2sing-box instance: https://${domain}/$sub2singbox_path/\\n\"\n  msg_inf \"- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\"\n\tmsg_inf \"Please Save this Screen!!\"\t\nelse\n\tnginx -t && printf '0\\n' | x-ui | grep --color=never -i ':'\n\tmsg_err \"sqlite and x-ui to be checked, try on a new clean linux! \"\nfi\n
+	     '{
+  "enabled": false,
+  "destOverride": [
+    "http",
+    "tls",
+    "quic",
+    "fakedns"
+  ],
+  "metadataOnly": false,
+  "routeOnly": false
+}'
+	     );
+      INSERT INTO "inbounds" ("user_id","up","down","total","remark","enable","expiry_time","listen","port","protocol","settings","stream_settings","tag","sniffing") VALUES ( 
+             '1',
+	     '0',
+             '0',
+	     '0',
+             '${emoji_flag} ws',
+	     '1',
+             '0',
+	     '',
+             '${ws_port}',
+	     'vless',
+             '{
+  "clients": [
+    {
+      "id": "${client_id2}",
+      "flow": "",
+      "email": "first_1",
+      "limitIp": 0,
+      "totalGB": 0,
+      "expiryTime": 0,
+      "enable": true,
+      "tgId": "",
+      "subId": "first",
+      "reset": 0,
+      "created_at": 1756726925000,
+      "updated_at": 1756726925000
+
+    }
+  ],
+  "decryption": "none",
+  "fallbacks": []
+}','{
+  "network": "ws",
+  "security": "none",
+  "externalProxy": [
+    {
+      "forceTls": "tls",
+      "dest": "${domain}",
+      "port": 443,
+      "remark": ""
+    }
+  ],
+  "wsSettings": {
+    "acceptProxyProtocol": false,
+    "path": "/${ws_port}/${ws_path}",
+    "host": "${domain}",
+    "headers": {}
+  }
+}',
+             'inbound-${ws_port}',
+	     '{
+  "enabled": false,
+  "destOverride": [
+    "http",
+    "tls",
+    "quic",
+    "fakedns"
+  ],
+  "metadataOnly": false,
+  "routeOnly": false
+}'
+	     );
+      INSERT INTO "inbounds" ("user_id","up","down","total","remark","enable","expiry_time","listen","port","protocol","settings","stream_settings","tag","sniffing") VALUES ( 
+             '1',
+	     '0',
+             '0',
+	     '0',
+             '${emoji_flag} xhttp',
+	     '0',
+             '0',
+	     '/dev/shm/uds2023.sock,0666',
+             '0',
+	     'vless',
+             '{
+  "clients": [
+    {
+      "id": "${client_id3}",
+      "flow": "",
+      "email": "firstX",
+      "limitIp": 0,
+      "totalGB": 0,
+      "expiryTime": 0,
+      "enable": true,
+      "tgId": "",
+      "subId": "first",
+      "reset": 0,
+	  "created_at": 1756726925000,
+      "updated_at": 1756726925000
+    }
+  ],
+  "decryption": "none",
+  "fallbacks": []
+}','{
+  "network": "xhttp",
+  "security": "none",
+  "externalProxy": [
+    {
+      "forceTls": "tls",
+      "dest": "${domain}",
+      "port": 443,
+      "remark": ""
+    }
+  ],
+  "xhttpSettings": {
+    "path": "/${xhttp_path}",
+    "host": "${domain}",
+    "headers": {},
+    "scMaxBufferedPosts": 30,
+    "scMaxEachPostBytes": "1000000",
+    "noSSEHeader": false,
+    "xPaddingBytes": "100-1000",
+    "mode": "packet-up"
+  },
+  "sockopt": {
+    "acceptProxyProtocol": false,
+    "tcpFastOpen": true,
+    "mark": 0,
+    "tproxy": "off",
+    "tcpMptcp": true,
+    "tcpNoDelay": true,
+    "domainStrategy": "UseIP",
+    "tcpMaxSeg": 1440,
+    "dialerProxy": "",
+    "tcpKeepAliveInterval": 0,
+    "tcpKeepAliveIdle": 300,
+    "tcpUserTimeout": 10000,
+    "tcpcongestion": "bbr",
+    "V6Only": false,
+    "tcpWindowClamp": 600,
+    "interface": ""
+  }
+}',
+             'inbound-/dev/shm/uds2023.sock,0666:0|',
+	     '{
+  "enabled": true,
+  "destOverride": [
+    "http",
+    "tls",
+    "quic",
+    "fakedns"
+  ],
+  "metadataOnly": false,
+  "routeOnly": false
+}'
+	     );
+	INSERT INTO "inbounds" ("user_id","up","down","total","remark","enable","expiry_time","listen","port","protocol","settings","stream_settings","tag","sniffing") VALUES ( 
+	     '1',
+	     '0',
+         '0',
+	     '0',
+         '${emoji_flag} trojan-grpc',
+	     '1',
+         '0',
+		 '',
+		 '${trojan_port}',
+		 'trojan',
+		 '{
+  "clients": [
+    {
+      "comment": "",
+      "created_at": 1756726925000,
+      "email": "firstT",
+      "enable": true,
+      "expiryTime": 0,
+      "limitIp": 0,
+      "password": "${trojan_pass}",
+      "reset": 0,
+      "subId": "first",
+      "tgId": 0,
+      "totalGB": 0,
+      "updated_at": 1756726925000
+    }
+  ],
+  "fallbacks": []
+}',
+'{
+  "network": "grpc",
+  "security": "none",
+  "externalProxy": [
+    {
+      "forceTls": "tls",
+      "dest": "${domain}",
+      "port": 443,
+      "remark": ""
+    }
+  ],
+  "grpcSettings": {
+    "serviceName": "/${trojan_port}/${trojan_path}",
+    "authority": "${domain}",
+    "multiMode": false
+  }
+}',
+'inbound-${trojan_port}',
+'{
+  "enabled": false,
+  "destOverride": [
+    "http",
+    "tls",
+    "quic",
+    "fakedns"
+  ],
+  "metadataOnly": false,
+  "routeOnly": false
+}'
+	);
+EOF
+/usr/local/x-ui/x-ui setting -username "${config_username}" -password "${config_password}" -port "${panel_port}" -webBasePath "${panel_path}"
+/usr/local/x-ui/x-ui cert -webCert "/root/cert/${domain}/fullchain.pem" -webCertKey "/root/cert/${domain}/privkey.pem"
+x-ui start
+else
+	msg_err "x-ui.db file not exist! Maybe x-ui isn't installed." && exit 1;
+fi
+}
+arch() {
+    case "$(uname -m)" in
+        x86_64 | x64 | amd64) echo 'amd64' ;;
+        i*86 | x86) echo '386' ;;
+        armv8* | armv8 | arm64 | aarch64) echo 'arm64' ;;
+        armv7* | armv7 | arm) echo 'armv7' ;;
+        armv6* | armv6) echo 'armv6' ;;
+        armv5* | armv5) echo 'armv5' ;;
+        s390x) echo 's390x' ;;
+        *) echo -e "${green}Unsupported CPU architecture! ${plain}" && rm -f install.sh && exit 1 ;;
+    esac
+}
+
+config_after_install() {
+            /usr/local/x-ui/x-ui setting -username "asdfasdf" -password "asdfasdf" -port "2096" -webBasePath "asdfasdf"    
+            /usr/local/x-ui/x-ui migrate
+}
+
+install_panel() {
+apt-get update && apt-get install -y -q wget curl tar tzdata
+    cd /usr/local/
+    
+    # Download resources
+    if [ $# == 0 ]; then
+        tag_version=$(curl -Ls "https://api.github.com/repos/MHSanaei/3x-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        if [[ ! -n "$tag_version" ]]; then
+            echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
+            tag_version=$(curl -4 -Ls "https://api.github.com/repos/MHSanaei/3x-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            if [[ ! -n "$tag_version" ]]; then
+                echo -e "${red}Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later${plain}"
+                exit 1
+            fi
+        fi
+        echo -e "Got x-ui latest version: ${tag_version}, beginning the installation..."
+        wget -N -O /usr/local/x-ui-linux-$(arch).tar.gz https://github.com/MHSanaei/3x-ui/releases/download/v2.9.4/x-ui-linux-$(arch).tar.gz
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}Downloading x-ui failed, please be sure that your server can access GitHub ${plain}"
+            exit 1
+        fi
+    else
+        tag_version=$1
+        tag_version_numeric=${tag_version#v}
+        min_version="2.3.5"
+        
+        if [[ "$(printf '%s\n' "$min_version" "$tag_version_numeric" | sort -V | head -n1)" != "$min_version" ]]; then
+            echo -e "${red}Please use a newer version (at least v2.3.5). Exiting installation.${plain}"
+            exit 1
+        fi
+        
+        url="https://github.com/MHSanaei/3x-ui/releases/download/v2.9.4/x-ui-linux-$(arch).tar.gz"
+        echo -e "Beginning to install x-ui $1"
+        wget -N -O /usr/local/x-ui-linux-$(arch).tar.gz ${url}
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}Download x-ui $1 failed, please check if the version exists ${plain}"
+            exit 1
+        fi
+    fi
+    wget -O /usr/bin/x-ui-temp https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.sh
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}Failed to download x-ui.sh${plain}"
+        exit 1
+    fi
+    
+    # Stop x-ui service and remove old resources
+    if [[ -e /usr/local/x-ui/ ]]; then
+        if [[ $release == "alpine" ]]; then
+            rc-service x-ui stop
+        else
+            systemctl stop x-ui
+        fi
+        rm /usr/local/x-ui/ -rf
+    fi
+    
+    # Extract resources and set permissions
+    tar zxvf x-ui-linux-$(arch).tar.gz
+    rm x-ui-linux-$(arch).tar.gz -f
+    
+    cd x-ui
+    chmod +x x-ui
+    chmod +x x-ui.sh
+    
+    # Check the system's architecture and rename the file accordingly
+    if [[ $(arch) == "armv5" || $(arch) == "armv6" || $(arch) == "armv7" ]]; then
+        mv bin/xray-linux-$(arch) bin/xray-linux-arm
+        chmod +x bin/xray-linux-arm
+    fi
+    chmod +x x-ui bin/xray-linux-$(arch)
+    
+    # Update x-ui cli and se set permission
+    mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
+    chmod +x /usr/bin/x-ui
+	config_after_install
+    
+    if [[ $release == "alpine" ]]; then
+        wget --inet4-only -O /etc/init.d/x-ui https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.rc
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}Failed to download x-ui.rc${plain}"
+            exit 1
+        fi
+        chmod +x /etc/init.d/x-ui
+        rc-update add x-ui
+        rc-service x-ui start
+    else
+        cp -f x-ui.service.debian /etc/systemd/system/x-ui.service
+        systemctl daemon-reload
+        systemctl enable x-ui
+        systemctl start x-ui
+    fi
+    
+    echo -e "${green}x-ui ${tag_version}${plain} installation finished, it is running now..."
+    echo -e ""
+    echo -e "┌───────────────────────────────────────────────────────┐
+│  ${blue}x-ui control menu usages (subcommands):${plain}              │
+│                                                       │
+│  ${blue}x-ui${plain}              - Admin Management Script          │
+│  ${blue}x-ui start${plain}        - Start                            │
+│  ${blue}x-ui stop${plain}         - Stop                             │
+│  ${blue}x-ui restart${plain}      - Restart                          │
+│  ${blue}x-ui status${plain}       - Current Status                   │
+│  ${blue}x-ui settings${plain}     - Current Settings                 │
+│  ${blue}x-ui enable${plain}       - Enable Autostart on OS Startup   │
+│  ${blue}x-ui disable${plain}      - Disable Autostart on OS Startup  │
+│  ${blue}x-ui log${plain}          - Check logs                       │
+│  ${blue}x-ui banlog${plain}       - Check Fail2ban ban logs          │
+│  ${blue}x-ui update${plain}       - Update                           │
+│  ${blue}x-ui legacy${plain}       - Legacy version                   │
+│  ${blue}x-ui install${plain}      - Install                          │
+│  ${blue}x-ui uninstall${plain}    - Uninstall                        │
+└───────────────────────────────────────────────────────┘"
+
+}
+###################################Install X-UI#########################################################
+if systemctl is-active --quiet x-ui; then
+	x-ui restart
+else
+    install_panel	
+	UPDATE_XUIDB
+	if ! systemctl is-enabled --quiet x-ui; then
+		systemctl daemon-reload && systemctl enable x-ui.service
+	fi
+	x-ui restart
+fi
+
+######################enable bbr and tune system########################################################
+apt-get install -yqq --no-install-recommends ca-certificates
+echo "net.core.default_qdisc=fq" | tee -a /etc/sysctl.conf
+echo "net.ipv4.tcp_congestion_control=bbr" | tee -a /etc/sysctl.conf
+echo "fs.file-max=2097152" | tee -a /etc/sysctl.conf
+echo "net.ipv4.tcp_timestamps = 1" | tee -a /etc/sysctl.conf
+echo "net.ipv4.tcp_sack = 1" | tee -a /etc/sysctl.conf
+echo "net.ipv4.tcp_window_scaling = 1" | tee -a /etc/sysctl.conf
+echo "net.core.rmem_max = 16777216" | tee -a /etc/sysctl.conf
+echo "net.core.wmem_max = 16777216" | tee -a /etc/sysctl.conf
+echo "net.ipv4.tcp_rmem = 4096 87380 16777216" | tee -a /etc/sysctl.conf
+echo "net.ipv4.tcp_wmem = 4096 65536 16777216" | tee -a /etc/sysctl.conf
+
+sysctl -p
+
+
+######################install_sub2sing-box#################################################################
+
+if pgrep -x "sub2sing-box" > /dev/null; then
+    echo "kill sub2sing-box..."
+    pkill -x "sub2sing-box"
+fi
+if [ -f "/usr/bin/sub2sing-box" ]; then
+    echo "delete sub2sing-box..."
+    rm -f /usr/bin/sub2sing-box
+fi
+wget -P /root/ https://github.com/legiz-ru/sub2sing-box/releases/download/v0.0.9/sub2sing-box_0.0.9_linux_amd64.tar.gz
+tar -xvzf /root/sub2sing-box_0.0.9_linux_amd64.tar.gz -C /root/ --strip-components=1 sub2sing-box_0.0.9_linux_amd64/sub2sing-box
+mv /root/sub2sing-box /usr/bin/
+chmod +x /usr/bin/sub2sing-box
+rm /root/sub2sing-box_0.0.9_linux_amd64.tar.gz
+su -c "/usr/bin/sub2sing-box server --bind 127.0.0.1 --port 8080 & disown" root
+
+######################install_fake_site#################################################################
+
+FAKE_SITE_TMP=$(mktemp -d)
+if wget -qO "$FAKE_SITE_TMP/repo.tar.gz" "https://github.com/mozaroc/3x-ui-pro/archive/refs/heads/main.tar.gz" \
+	&& tar -xzf "$FAKE_SITE_TMP/repo.tar.gz" -C "$FAKE_SITE_TMP" --strip-components=3 "3x-ui-pro-main/assets/fake-sites"; then
+	FAKE_SITES=("$FAKE_SITE_TMP"/site-*/)
+	FAKE_SITE="${FAKE_SITES[$((RANDOM % ${#FAKE_SITES[@]}))]}"
+	msg_inf "Random fake site template: $(basename "$FAKE_SITE")"
+	mkdir -p /var/www/html
+	rm -rf /var/www/html/*
+	cp -a "$FAKE_SITE". /var/www/html/
+	msg_ok "Fake site installed successfully!"
+else
+	msg_err "Failed to download fake site templates!"
+fi
+rm -rf "$FAKE_SITE_TMP"
+
+######################install_web_sub_page##############################################################
+
+URL_SUB_PAGE=( "https://github.com/legiz-ru/x-ui-pro/raw/master/sub-3x-ui.html"
+		"https://github.com/legiz-ru/x-ui-pro/raw/master/sub-3x-ui-classical.html"
+	)
+URL_CLASH_SUB=( "https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash.yaml"
+		"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash_skrepysh.yaml"
+		"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash_fullproxy_without_ru.yaml"
+  		"https://github.com/legiz-ru/x-ui-pro/raw/master/clash/clash_refilter_ech.yaml"
+	)
+DEST_DIR_SUB_PAGE="/var/www/subpage"
+DEST_FILE_SUB_PAGE="$DEST_DIR_SUB_PAGE/index.html"
+DEST_FILE_CLASH_SUB="$DEST_DIR_SUB_PAGE/clash.yaml"
+
+sudo mkdir -p "$DEST_DIR_SUB_PAGE"
+
+sudo curl -L "${URL_CLASH_SUB[$CLASH]}" -o "$DEST_FILE_CLASH_SUB"
+sudo curl -L "${URL_SUB_PAGE[$CUSTOMWEBSUB]}" -o "$DEST_FILE_SUB_PAGE"
+
+sed -i "s/\${DOMAIN}/$domain/g" "$DEST_FILE_SUB_PAGE"
+sed -i "s/\${DOMAIN}/$domain/g" "$DEST_FILE_CLASH_SUB"
+sed -i "s#\${SUB_JSON_PATH}#$json_path#g" "$DEST_FILE_SUB_PAGE"
+sed -i "s#\${SUB_PATH}#$sub_path#g" "$DEST_FILE_SUB_PAGE"
+sed -i "s#\${SUB_PATH}#$sub_path#g" "$DEST_FILE_CLASH_SUB"
+sed -i "s|sub.legiz.ru|$domain/$sub2singbox_path|g" "$DEST_FILE_SUB_PAGE"
+
+#while true; do	
+#	if [[ -n "$tg_escaped_link" ]]; then
+#		break
+#	fi
+#	echo -en "Enter your support link for web sub page (example https://t.me/durov/ ): " && read tg_escaped_link
+#done
+
+#sed -i -e "s|https://t.me/gozargah_marzban|$tg_escaped_link|g" -e "s|https://github.com/Gozargah/Marzban#donation|$tg_escaped_link|g" "$DEST_FILE_SUB_PAGE"
+
+######################cronjob for ssl/reload service/cloudflareips######################################
+crontab -l | grep -v "certbot\|x-ui\|cloudflareips" | crontab -
+(crontab -l 2>/dev/null; echo '@reboot /usr/bin/sub2sing-box server --bind 127.0.0.1 --port 8080 > /dev/null 2>&1') | crontab -
+(crontab -l 2>/dev/null; echo '@daily x-ui restart > /dev/null 2>&1 && nginx -s reload;') | crontab -
+(crontab -l 2>/dev/null; echo '@monthly certbot renew --nginx --non-interactive --post-hook "nginx -s reload" > /dev/null 2>&1;') | crontab -
+##################################ufw###################################################################
+ufw disable
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable  
+##################################Show Details##########################################################
+
+if systemctl is-active --quiet x-ui; then clear
+	printf '0\n' | x-ui | grep --color=never -i ':'
+	msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+	nginx -T | grep -i 'ssl_certificate\|ssl_certificate_key'
+	msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+	certbot certificates | grep -i 'Path:\|Domains:\|Expiry Date:'
+
+#	msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+#	if [[ -n $IP4 ]] && [[ "$IP4" =~ $IP4_REGEX ]]; then 
+#		msg_inf "IPv4: http://$IP4:$PORT/$RNDSTR/"
+#	fi
+#	if [[ -n $IP6 ]] && [[ "$IP6" =~ $IP6_REGEX ]]; then 
+#		msg_inf "IPv6: http://[$IP6]:$PORT/$RNDSTR/"
+#	fi
+
+ msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+	msg_inf "X-UI Secure Panel: https://${domain}/${panel_path}/\n"
+ 	echo -e "Username:  ${config_username} \n" 
+	echo -e "Password:  ${config_password} \n" 
+	msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+    msg_inf "Web Sub Page your first client: https://${domain}/${web_path}?name=first\n"
+    msg_inf "Your local sub2sing-box instance: https://${domain}/$sub2singbox_path/\n"
+  msg_inf "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+	msg_inf "Please Save this Screen!!"	
+else
+	nginx -t && printf '0\n' | x-ui | grep --color=never -i ':'
+	msg_err "sqlite and x-ui to be checked, try on a new clean linux! "
+fi
+#################################################N-joy##################################################
